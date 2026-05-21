@@ -11,7 +11,7 @@ pipeline {
             }
         }
 
-        // ETAPA 2: PRUEBAS ESTÁTICAS (Inspirada en tu ejemplo)
+        // ETAPA 2: PRUEBAS ESTÁTICAS
         stage('Static Test') {
             steps {
                 // catchError asegura que si hay errores de formato, el pipeline siga adelante
