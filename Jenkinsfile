@@ -1,20 +1,31 @@
 pipeline {
     agent any
 
-    environment {
-        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
-        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
-        AWS_SESSION_TOKEN     = credentials('AWS_SESSION_TOKEN')
-        AWS_DEFAULT_REGION    = 'us-east-1'
-    }
-
     stages {
-        stage('Prueba de Conexion') {
+        // ETAPA 1: DESCARGA CÓDIGO FUENTE
+        stage('Get Code') {
             steps {
-                echo '¡Hola! Jenkins ha descargado el código con éxito de GitHub.'
-                
-                echo 'Verificando conexión con AWS Academy...'
-                sh 'aws sts get-caller-identity'
+                echo "Descargando el código del proyecto..."
+                git branch: 'develop', url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git'
+                sh 'ls -la'
+            }
+        }
+
+        // ETAPA 2: PRUEBAS ESTÁTICAS (Inspirada en tu ejemplo)
+        stage('Static Test') {
+            steps {
+                // catchError asegura que si hay errores de formato, el pipeline siga adelante
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    echo "Ejecutando Flake8..."
+                    sh 'flake8 --format=pylint --exit-zero src > flake8.out'
+                    
+                    echo "Ejecutando Bandit..."
+                    sh 'bandit --exit-zero -r src -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}"'
+                    
+                    // Mostramos el resultado rápido en la consola de Jenkins para verificarlo
+                    sh 'cat flake8.out'
+                    sh 'cat bandit.out'
+                }
             }
         }
     }
