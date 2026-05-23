@@ -65,13 +65,4 @@ pipeline {
             }
         }
     }
-
-    post {
-        success {
-            echo "✅ Pipeline CD completado. Desplegado en producción correctamente."
-        }
-        failure {
-            echo "❌ Pipeline CD fallido. Revisa los logs."
-        }
-    }
 }
