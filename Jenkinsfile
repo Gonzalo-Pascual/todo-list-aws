@@ -51,7 +51,7 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
-                    // Borrar stack anterior para evitar conflictos
+                    # Borrar stack anterior para evitar conflictos
                     sam delete \
                         --stack-name todo-list-aws-staging \
                         --no-prompts \
@@ -61,7 +61,7 @@ pipeline {
 
                     sam validate --region ${AWS_DEFAULT_REGION}
 
-                    // Tee guarda el output para extraer la URL después
+                    # Tee guarda el output para extraer la URL después
                     sam deploy \
                         --stack-name todo-list-aws-staging \
                         --region ${AWS_DEFAULT_REGION} \
@@ -77,10 +77,10 @@ pipeline {
         stage('Rest Test') {
             steps {
                 sh '''
-                    // Extraer URL con awk del output del deploy
+                    # Extraer URL con awk del output del deploy
                     BASE_URL=$(awk '/Key *BaseUrlApi/{getline; getline; print $2}' deploy_output.txt)
 
-                    // Si no hay output, consultar CloudFormation
+                    # Si no hay output, consultar CloudFormation
                     if [ -z "$BASE_URL" ]; then
                         BASE_URL=$(aws cloudformation describe-stacks \
                             --stack-name todo-list-aws-staging \
