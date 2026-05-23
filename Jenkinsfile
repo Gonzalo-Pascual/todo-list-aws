@@ -109,11 +109,15 @@ pipeline {
                         git checkout master
                         git pull origin master --no-rebase
         
-                        git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
+                        # Merge aceptando develop en caso de conflicto
+                        git merge origin/develop --no-ff \
+                            -m "CI: Merge develop into master [auto]" \
+                            -X theirs || true
         
+                        # Restaurar el Jenkinsfile de master (pipeline CD)
                         git checkout origin/master -- Jenkinsfile
                         git add Jenkinsfile
-                        git commit --amend --no-edit
+                        git diff --cached --quiet || git commit --amend --no-edit
         
                         git push origin master --force-with-lease
                     '''
