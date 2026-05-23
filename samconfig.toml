@@ -3,7 +3,6 @@ version = 0.1
 [default.deploy]
 [default.deploy.parameters]
 stack_name = "todo-list-aws"
-s3_bucket = "pruebaunirgonzalo"
 s3_prefix = "todo-list-aws"
 capabilities = "CAPABILITY_IAM"
 parameter_overrides = "Stage=\"default\""
@@ -18,7 +17,6 @@ region = "us-east-1"
 [staging.deploy]
 [staging.deploy.parameters]
 stack_name = "staging-todo-list-aws"
-s3_bucket = "pruebaunirgonzalo"
 s3_prefix = "staging-todo-list-aws"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
@@ -34,9 +32,9 @@ region = "us-east-1"
 [production.deploy]
 [production.deploy.parameters]
 stack_name = "todo-list-aws-production"
-s3_bucket = "pruebaunirgonzalo"
 s3_prefix = "todo-list-aws"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
 parameter_overrides = "Stage=\"production\""
 image_repositories = []
+resolve_s3 = true
