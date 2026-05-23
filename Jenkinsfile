@@ -102,20 +102,21 @@ pipeline {
         // ETAPA 5: PROMOTE
         stage('Promote') {
             steps {
-                    withCredentials([usernamePassword(
+                withCredentials([usernamePassword(
                     credentialsId: 'github-token',
                     usernameVariable: 'GIT_USER',
                     passwordVariable: 'GIT_TOKEN'
                 )]) {
-                sh '''
-                    git config user.email "jenkins@ci.local"
-                    git config user.name "Jenkins CI"
-
-                    git fetch origin
-                    git checkout master
-                    git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
-                    git push origin master
-                '''
+                    sh '''
+                        git config user.email "jenkins@ci.local"
+                        git config user.name "Jenkins CI"
+                        git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
+                        git fetch origin
+                        git checkout master
+                        git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
+                        git push origin master
+                    '''
+                }
             }
         }
     }
