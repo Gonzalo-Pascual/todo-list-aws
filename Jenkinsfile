@@ -54,7 +54,7 @@ pipeline {
             steps {
                 sh '''
                     sam build
-                    sam validate --region us-east-1
+                    sam validate --region ${AWS_DEFAULT_REGION}
                     sam deploy \
                         --stack-name todo-list-aws-staging \
                         --region us-east-1 \
