@@ -140,18 +140,21 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
-                    
-                        git checkout master
-                        git merge origin/develop --no-ff \
-                            -m "CI: Merge develop into master [auto]" \
-                            -X theirs
-                    
-                        # Solo protegemos el Jenkinsfile de master (CD), no el Jenkinsfile_agentes
-                        git checkout origin/master -- Jenkinsfile
-                        git add Jenkinsfile
-                        git diff --cached --quiet || git commit --amend --no-edit
-                    
-                        git push origin master
+
+git checkout master
+git reset --hard origin/master
+
+git merge origin/develop --no-ff \
+    -m "CI: Merge develop into master [auto]" \
+    -X theirs
+
+# Restaurar ambos Jenkinsfiles desde master para no sobreescribirlos
+git checkout origin/master -- Jenkinsfile
+git checkout origin/master -- Jenkinsfile_agentes
+git add Jenkinsfile Jenkinsfile_agentes
+git diff --cached --quiet || git commit --amend --no-edit
+
+git push origin master
                     '''
                 }
             }
