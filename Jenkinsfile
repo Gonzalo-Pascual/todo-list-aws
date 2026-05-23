@@ -1,6 +1,6 @@
 pipeline {
     agent any
-    
+
     environment {
         AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
         AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
@@ -13,8 +13,11 @@ pipeline {
         // ETAPA 1: GET CODE
         stage('Get Code') {
             steps {
+                sh 'whoami ; hostname ; hostname -I ; uname -a'
                 git branch: 'develop',
                     url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git'
+                echo "WORKSPACE: ${env.WORKSPACE}"
+                sh 'git rev-parse --abbrev-ref HEAD'
                 sh 'ls -la'
             }
         }
@@ -22,7 +25,6 @@ pipeline {
         // ETAPA 2: PRUEBAS ESTÁTICAS
         stage('Static Test') {
             steps {
-                // Flake8: análisis de estilo/errores de código
                 sh '''
                     flake8 --exit-zero --format=pylint src > flake8.out
                     cat flake8.out
@@ -30,10 +32,7 @@ pipeline {
                 recordIssues(
                     id: 'flake8',
                     tools: [pyLint(name: 'Flake8', pattern: 'flake8.out')]
-                    // Sin qualityGates: siempre pasa si el informe se genera
                 )
-
-                // Bandit: análisis de seguridad
                 sh '''
                     bandit --exit-zero -r src \
                         -f custom \
@@ -44,7 +43,6 @@ pipeline {
                 recordIssues(
                     id: 'bandit',
                     tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')]
-                    // Sin qualityGates: siempre pasa si el informe se genera
                 )
             }
         }
@@ -53,15 +51,24 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
+                    // Borrar stack anterior para evitar conflictos
+                    sam delete \
+                        --stack-name todo-list-aws-staging \
+                        --no-prompts \
+                        --region ${AWS_DEFAULT_REGION} || true
+
                     sam build
+
                     sam validate --region ${AWS_DEFAULT_REGION}
+
+                    // Tee guarda el output para extraer la URL después
                     sam deploy \
                         --stack-name todo-list-aws-staging \
-                        --region us-east-1 \
+                        --region ${AWS_DEFAULT_REGION} \
                         --capabilities CAPABILITY_IAM \
                         --no-confirm-changeset \
                         --no-fail-on-empty-changeset \
-                        --parameter-overrides Stage=staging
+                        --parameter-overrides Stage=staging | tee deploy_output.txt
                 '''
             }
         }
@@ -69,24 +76,22 @@ pipeline {
         // ETAPA 4: PRUEBAS DE INTEGRACIÓN
         stage('Rest Test') {
             steps {
-                // Recuperamos la URL del endpoint desplegado por SAM/CloudFormation
-                script {
-                    env.BASE_URL = sh(
-                        script: '''
-                            aws cloudformation describe-stacks \
-                                --stack-name todo-list-aws-staging \
-                                --region us-east-1 \
-                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                                --output text
-                        ''',
-                        returnStdout: true
-                    ).trim()
-                    echo "API URL: ${env.BASE_URL}"
-                }
-
-                // Ejecutamos los tests de integración con Pytest
                 sh '''
+                    // Extraer URL con awk del output del deploy
+                    BASE_URL=$(awk '/Key *BaseUrlApi/{getline; getline; print $2}' deploy_output.txt)
+
+                    // Si no hay output, consultar CloudFormation
+                    if [ -z "$BASE_URL" ]; then
+                        BASE_URL=$(aws cloudformation describe-stacks \
+                            --stack-name todo-list-aws-staging \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                            --output text)
+                    fi
+
                     export BASE_URL=${BASE_URL}
+                    echo "API URL: ${BASE_URL}"
+
                     python3 -m pytest test/integration/todoApiTest.py \
                         --junitxml=result-rest.xml \
                         -v
@@ -112,19 +117,16 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
-        
+
                         git checkout master
-        
-                        # Merge aceptando develop en conflictos automáticamente
                         git merge origin/develop --no-ff \
                             -m "CI: Merge develop into master [auto]" \
                             -X theirs
-        
-                        # Restaurar el Jenkinsfile CD de master (no sobreescribir con el CI de develop)
+
                         git checkout origin/master -- Jenkinsfile
                         git add Jenkinsfile
                         git diff --cached --quiet || git commit --amend --no-edit
-        
+
                         git push origin master
                     '''
                 }
@@ -132,4 +134,10 @@ pipeline {
         }
     }
 
+    post {
+        //Limpiar workspace siempre al terminar
+        always {
+            cleanWs()
+        }
+    }
 }
