@@ -105,15 +105,17 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
-
+        
                         git checkout master
+                        git pull origin master --no-rebase
+        
                         git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
-
+        
                         git checkout origin/master -- Jenkinsfile
                         git add Jenkinsfile
                         git commit --amend --no-edit
-
-                        git push origin master
+        
+                        git push origin master --force-with-lease
                     '''
                 }
             }
