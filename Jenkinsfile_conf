@@ -11,18 +11,18 @@ pipeline {
     stages {
 
         // ETAPA 1: GET CODE
-        // Descarga el código fuente de master Y el samconfig.toml de production
+        // Descarga el código fuente de develop Y el samconfig.toml de staging
         // usando sparse checkout para traer solo el fichero necesario del repo de config
         stage('Get Code') {
             agent any
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
 
-                // 1a. Clonar el repo principal (rama master) SIN samconfig.toml
-                //     para garantizar que no se usa el fichero del repo de código
+                // 1a. Clonar el repo principal (rama develop) SIN samconfig.toml
+                //     para asegurarnos de que no usamos el que viene en el repo de código
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: '*/master']],
+                    branches: [[name: '*/develop']],
                     doGenerateSubmoduleConfigurations: false,
                     extensions: [
                         [$class: 'SparseCheckoutPaths',
@@ -34,12 +34,12 @@ pipeline {
                     userRemoteConfigs: [[url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git']]
                 ])
 
-                // 1b. Clonar el repo de config (rama production) en subdirectorio temporal
+                // 1b. Clonar el repo de config (rama staging) en subdirectorio temporal
                 //     trayendo únicamente el samconfig.toml
                 dir('config') {
                     checkout([
                         $class: 'GitSCM',
-                        branches: [[name: '*/production']],
+                        branches: [[name: '*/staging']],
                         doGenerateSubmoduleConfigurations: false,
                         extensions: [
                             [$class: 'SparseCheckoutPaths',
@@ -55,7 +55,7 @@ pipeline {
                 sh '''
                     mv config/samconfig.toml .
                     rm -rf config
-                    echo "=== Verificación: samconfig.toml de production ==="
+                    echo "=== Verificación: samconfig.toml de staging ==="
                     cat samconfig.toml
                     ls -la
                 '''
@@ -63,20 +63,47 @@ pipeline {
                 echo "WORKSPACE: ${env.WORKSPACE}"
                 sh 'git rev-parse --abbrev-ref HEAD'
 
-                // El stash incluye el código + samconfig.toml de production
+                // Guardamos todo el workspace (código + samconfig de staging) para los agentes
                 stash name: 'codigo', includes: '**/*'
             }
         }
 
-        // ETAPA 2: DESPLIEGUE EN PRODUCTION
-        // Usa el samconfig.toml descargado del repo de config (rama production)
+        // ETAPA 2: PRUEBAS ESTÁTICAS
+        stage('Static Test') {
+            agent { label 'agente1' }
+            steps {
+                unstash 'codigo'
+                sh '''
+                    flake8 --exit-zero --format=pylint src > flake8.out
+                    cat flake8.out
+                '''
+                recordIssues(
+                    id: 'flake8',
+                    tools: [pyLint(name: 'Flake8', pattern: 'flake8.out')]
+                )
+                sh '''
+                    bandit --exit-zero -r src \
+                        -f custom \
+                        -o bandit.out \
+                        --msg-template "{abspath}:{line}: [{test_id}] {msg}"
+                    cat bandit.out
+                '''
+                recordIssues(
+                    id: 'bandit',
+                    tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')]
+                )
+            }
+        }
+
+        // ETAPA 3: DESPLIEGUE EN STAGING
+        // Usa el samconfig.toml descargado del repo de config (rama staging)
         stage('Deploy') {
             agent any
             steps {
                 unstash 'codigo'
                 sh '''
                     sam delete \
-                        --stack-name todo-list-aws-production \
+                        --stack-name todo-list-aws-staging \
                         --no-prompts \
                         --region ${AWS_DEFAULT_REGION} || true
 
@@ -84,10 +111,10 @@ pipeline {
 
                     sam validate --region ${AWS_DEFAULT_REGION}
 
-                    # --config-env production lee la sección [production] del samconfig.toml
+                    # --config-env staging lee la sección [staging] del samconfig.toml
                     # que viene del repo de config, no del repo de código
                     sam deploy \
-                        --config-env production \
+                        --config-env staging \
                         --no-confirm-changeset \
                         --no-fail-on-empty-changeset | tee deploy_output.txt
                 '''
@@ -101,7 +128,7 @@ pipeline {
                         baseUrl = sh(
                             script: """
                                 aws cloudformation describe-stacks \
-                                    --stack-name todo-list-aws-production \
+                                    --stack-name todo-list-aws-staging \
                                     --region ${AWS_DEFAULT_REGION} \
                                     --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
                                     --output text
@@ -118,8 +145,7 @@ pipeline {
             }
         }
 
-        // ETAPA 3: PRUEBAS DE INTEGRACIÓN (solo lectura)
-        // En producción solo se ejecutan tests de lectura para no alterar datos reales
+        // ETAPA 4: PRUEBAS DE INTEGRACIÓN
         stage('Rest Test') {
             agent { label 'agente2' }
             steps {
@@ -130,14 +156,50 @@ pipeline {
                     echo "API URL: ${BASE_URL}"
 
                     python3 -m pytest test/integration/todoApiTest.py \
-                        -k "test_api_listtodos or test_api_gettodo" \
-                        --junitxml=result-rest-production.xml \
+                        --junitxml=result-rest.xml \
                         -v
                 '''
             }
             post {
                 always {
-                    junit 'result-rest-production.xml'
+                    junit 'result-rest.xml'
+                }
+            }
+        }
+
+        // ETAPA 5: PROMOTE
+        stage('Promote') {
+            agent any
+            steps {
+                unstash 'codigo'
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-token',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh '''
+                        git config user.email "jenkins@ci.local"
+                        git config user.name "Jenkins CI"
+                        git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
+                        git fetch origin
+                    
+                        # Descartar el samconfig.toml externo antes de cambiar de rama
+                        git checkout -- samconfig.toml
+                    
+                        git checkout master
+                        git reset --hard origin/master
+                    
+                        git merge origin/develop --no-ff \
+                            -m "CI: Merge develop into master [auto]" \
+                            -X theirs
+                    
+                        git checkout origin/master -- Jenkinsfile
+                        git checkout origin/master -- Jenkinsfile_agentes
+                        git add Jenkinsfile Jenkinsfile_agentes
+                        git diff --cached --quiet || git commit --amend --no-edit
+                    
+                        git push origin master
+                    '''
                 }
             }
         }
