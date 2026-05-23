@@ -12,8 +12,11 @@ pipeline {
 
         stage('Get Code') {
             steps {
+                sh 'whoami ; hostname ; hostname -I ; uname -a'
                 git branch: 'master',
                     url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git'
+                echo "WORKSPACE: ${env.WORKSPACE}"
+                sh 'git rev-parse --abbrev-ref HEAD'
                 sh 'ls -la'
             }
         }
@@ -21,39 +24,30 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
-                    sam build
-                    sam validate --region ${AWS_DEFAULT_REGION}
-                    sam deploy \
+                    sam delete \
                         --stack-name todo-list-aws-production \
-                        --region ${AWS_DEFAULT_REGION} \
-                        --capabilities CAPABILITY_IAM \
+                        --no-prompts \
+                        --region ${AWS_DEFAULT_REGION} || true
+
+                    sam build
+
+                    sam deploy \
+                        --config-file samconfig.toml \
+                        --config-env production \
                         --no-confirm-changeset \
-                        --no-fail-on-empty-changeset \
-                        --parameter-overrides Stage=production
+                        --no-fail-on-empty-changeset | tee deploy_output.txt
                 '''
             }
         }
 
         stage('Rest Test') {
             steps {
-                script {
-                    env.BASE_URL = sh(
-                        script: '''
-                            aws cloudformation describe-stacks \
-                                --stack-name todo-list-aws-production \
-                                --region ${AWS_DEFAULT_REGION} \
-                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                                --output text
-                        ''',
-                        returnStdout: true
-                    ).trim()
-                    echo "API URL: ${env.BASE_URL}"
-                }
-
                 sh '''
+                    BASE_URL=$(awk '/Key *BaseUrlApi/{getline; getline; print $2}' deploy_output.txt)
                     export BASE_URL=${BASE_URL}
+                    echo "API URL: ${BASE_URL}"
                     python3 -m pytest test/integration/todoApiTest.py \
-                        -k "listtodos or gettodo" \
+                        -k "test_api_listtodos or test_api_gettodo" \
                         --junitxml=result-rest-production.xml \
                         -v
                 '''
@@ -63,6 +57,12 @@ pipeline {
                     junit 'result-rest-production.xml'
                 }
             }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
         }
     }
 }
