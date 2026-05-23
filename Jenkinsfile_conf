@@ -1,0 +1,151 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+        AWS_SESSION_TOKEN     = credentials('aws-session-token')
+        AWS_DEFAULT_REGION    = 'us-east-1'
+    }
+
+    stages {
+
+        // ETAPA 1: GET CODE
+        // Descarga el código fuente de master Y el samconfig.toml de production
+        // usando sparse checkout para traer solo el fichero necesario del repo de config
+        stage('Get Code') {
+            agent any
+            steps {
+                sh 'whoami ; hostname ; hostname -I ; uname -a'
+
+                // 1a. Clonar el repo principal (rama master) SIN samconfig.toml
+                //     para garantizar que no se usa el fichero del repo de código
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/master']],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [
+                        [$class: 'SparseCheckoutPaths',
+                         sparseCheckoutPaths: [
+                             [$class: 'SparseCheckoutPath', path: '/*'],
+                             [$class: 'SparseCheckoutPath', path: '!/samconfig.toml']
+                         ]]
+                    ],
+                    userRemoteConfigs: [[url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git']]
+                ])
+
+                // 1b. Clonar el repo de config (rama production) en subdirectorio temporal
+                //     trayendo únicamente el samconfig.toml
+                dir('config') {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/production']],
+                        doGenerateSubmoduleConfigurations: false,
+                        extensions: [
+                            [$class: 'SparseCheckoutPaths',
+                             sparseCheckoutPaths: [
+                                 [$class: 'SparseCheckoutPath', path: 'samconfig.toml']
+                             ]]
+                        ],
+                        userRemoteConfigs: [[url: 'https://github.com/Gonzalo-Pascual/todo-list-aws-config.git']]
+                    ])
+                }
+
+                // 1c. Mover samconfig.toml al workspace raíz y limpiar el directorio temporal
+                sh '''
+                    mv config/samconfig.toml .
+                    rm -rf config
+                    echo "=== Verificación: samconfig.toml de production ==="
+                    cat samconfig.toml
+                    ls -la
+                '''
+
+                echo "WORKSPACE: ${env.WORKSPACE}"
+                sh 'git rev-parse --abbrev-ref HEAD'
+
+                // El stash incluye el código + samconfig.toml de production
+                stash name: 'codigo', includes: '**/*'
+            }
+        }
+
+        // ETAPA 2: DESPLIEGUE EN PRODUCTION
+        // Usa el samconfig.toml descargado del repo de config (rama production)
+        stage('Deploy') {
+            agent any
+            steps {
+                unstash 'codigo'
+                sh '''
+                    sam delete \
+                        --stack-name todo-list-aws-production \
+                        --no-prompts \
+                        --region ${AWS_DEFAULT_REGION} || true
+
+                    sam build
+
+                    sam validate --region ${AWS_DEFAULT_REGION}
+
+                    # --config-env production lee la sección [production] del samconfig.toml
+                    # que viene del repo de config, no del repo de código
+                    sam deploy \
+                        --config-env production \
+                        --no-confirm-changeset \
+                        --no-fail-on-empty-changeset | tee deploy_output.txt
+                '''
+                script {
+                    def baseUrl = sh(
+                        script: "awk '/Key *BaseUrlApi/{getline; getline; print \$2}' deploy_output.txt",
+                        returnStdout: true
+                    ).trim()
+
+                    if (!baseUrl) {
+                        baseUrl = sh(
+                            script: """
+                                aws cloudformation describe-stacks \
+                                    --stack-name todo-list-aws-production \
+                                    --region ${AWS_DEFAULT_REGION} \
+                                    --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                                    --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+                    }
+
+                    env.BASE_URL = baseUrl
+                    writeFile file: 'base_url.txt', text: baseUrl
+                    echo "API URL: ${env.BASE_URL}"
+                }
+                stash name: 'url', includes: 'base_url.txt'
+            }
+        }
+
+        // ETAPA 3: PRUEBAS DE INTEGRACIÓN (solo lectura)
+        // En producción solo se ejecutan tests de lectura para no alterar datos reales
+        stage('Rest Test') {
+            agent { label 'agente2' }
+            steps {
+                unstash 'url'
+                sh '''
+                    BASE_URL=$(cat base_url.txt)
+                    export BASE_URL=${BASE_URL}
+                    echo "API URL: ${BASE_URL}"
+
+                    python3 -m pytest test/integration/todoApiTest.py \
+                        -k "test_api_listtodos or test_api_gettodo" \
+                        --junitxml=result-rest-production.xml \
+                        -v
+                '''
+            }
+            post {
+                always {
+                    junit 'result-rest-production.xml'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
