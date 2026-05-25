@@ -10,6 +10,7 @@ pipeline {
 
     stages {
 
+        // ETAPA 1: GET CODE
         stage('Get Code') {
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
@@ -21,36 +22,44 @@ pipeline {
             }
         }
 
+        // ETAPA 2: DESPLIEGUE EN PRODUCCIÓN
         stage('Deploy') {
             steps {
                 sh '''
-                    sam delete \
-                        --stack-name todo-list-aws-production \
-                        --no-prompts \
-                        --region ${AWS_DEFAULT_REGION} || true
-
                     sam build
-
+                    sam validate --region ${AWS_DEFAULT_REGION}
                     sam deploy \
                         --config-file samconfig.toml \
                         --config-env production \
                         --no-confirm-changeset \
-                        --no-fail-on-empty-changeset | tee deploy_output.txt
+                        --no-fail-on-empty-changeset
                 '''
+                script {
+                    env.BASE_URL = sh(
+                        script: '''
+                            aws cloudformation describe-stacks \
+                                --stack-name todo-list-aws-production \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                                --output text
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    echo "BASE_URL: ${env.BASE_URL}"
+                }
             }
         }
 
+        // ETAPA 3: PRUEBAS DE INTEGRACIÓN (solo lectura)
         stage('Rest Test') {
             steps {
-                sh '''
-                    BASE_URL=$(awk '/Key *BaseUrlApi/{getline; getline; print $2}' deploy_output.txt)
-                    export BASE_URL=${BASE_URL}
-                    echo "API URL: ${BASE_URL}"
+                sh """
+                    echo "API URL: ${env.BASE_URL}"
                     python3 -m pytest test/integration/todoApiTest.py \
                         -k "test_api_listtodos or test_api_gettodo" \
                         --junitxml=result-rest-production.xml \
                         -v
-                '''
+                """
             }
             post {
                 always {
