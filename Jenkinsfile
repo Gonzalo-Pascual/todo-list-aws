@@ -51,25 +51,28 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
-                    # Borrar stack anterior para evitar conflictos
-                    sam delete \
-                        --stack-name todo-list-aws-staging \
-                        --no-prompts \
-                        --region ${AWS_DEFAULT_REGION} || true
-
+                    sam delete --stack-name todo-list-aws-staging \
+                        --no-prompts --region ${AWS_DEFAULT_REGION} || true
                     sam build
-
                     sam validate --region ${AWS_DEFAULT_REGION}
-
-                    # Tee guarda el output para extraer la URL después
                     sam deploy \
                         --stack-name todo-list-aws-staging \
                         --region ${AWS_DEFAULT_REGION} \
                         --capabilities CAPABILITY_IAM \
                         --no-confirm-changeset \
                         --no-fail-on-empty-changeset \
-                        --parameter-overrides Stage=staging | tee deploy_output.txt
+                        --parameter-overrides Stage=staging
                 '''
+                script {
+                    env.BASE_URL = sh(
+                        script: '''aws cloudformation describe-stacks \
+                            --stack-name todo-list-aws-staging \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                            --output text''',
+                        returnStdout: true
+                    ).trim()
+                }
             }
         }
 
@@ -123,9 +126,9 @@ pipeline {
                             -m "CI: Merge develop into master [auto]" \
                             -X theirs
 
-                        git checkout origin/master -- Jenkinsfile
-                        git add Jenkinsfile
-                        git diff --cached --quiet || git commit --amend --no-edit
+                        git checkout master
+                        git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
+                        git push origin master
 
                         git push origin master
                     '''
