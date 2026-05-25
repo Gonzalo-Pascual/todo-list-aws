@@ -51,8 +51,6 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
-                    sam delete --stack-name todo-list-aws-staging \
-                        --no-prompts --region ${AWS_DEFAULT_REGION} || true
                     sam build
                     sam validate --region ${AWS_DEFAULT_REGION}
                     sam deploy \
@@ -65,13 +63,16 @@ pipeline {
                 '''
                 script {
                     env.BASE_URL = sh(
-                        script: '''aws cloudformation describe-stacks \
-                            --stack-name todo-list-aws-staging \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                            --output text''',
+                        script: '''
+                            aws cloudformation describe-stacks \
+                                --stack-name todo-list-aws-staging \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                                --output text
+                        ''',
                         returnStdout: true
                     ).trim()
+                    echo "BASE_URL: ${env.BASE_URL}"
                 }
             }
         }
@@ -79,26 +80,12 @@ pipeline {
         // ETAPA 4: PRUEBAS DE INTEGRACIÓN
         stage('Rest Test') {
             steps {
-                sh '''
-                    # Extraer URL con awk del output del deploy
-                    BASE_URL=$(awk '/Key *BaseUrlApi/{getline; getline; print $2}' deploy_output.txt)
-
-                    # Si no hay output, consultar CloudFormation
-                    if [ -z "$BASE_URL" ]; then
-                        BASE_URL=$(aws cloudformation describe-stacks \
-                            --stack-name todo-list-aws-staging \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                            --output text)
-                    fi
-
-                    export BASE_URL=${BASE_URL}
-                    echo "API URL: ${BASE_URL}"
-
+                sh """
+                    echo "API URL: ${env.BASE_URL}"
                     python3 -m pytest test/integration/todoApiTest.py \
                         --junitxml=result-rest.xml \
                         -v
-                '''
+                """
             }
             post {
                 always {
@@ -120,17 +107,10 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
-
-                        git checkout master
-                        git merge origin/develop --no-ff \
-                            -m "CI: Merge develop into master [auto]" \
-                            -X theirs
-
                         git checkout master
                         git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
                         git push origin master
-
-                        git push origin master
+                        git remote set-url origin https://github.com/Gonzalo-Pascual/todo-list-aws.git
                     '''
                 }
             }
@@ -138,7 +118,6 @@ pipeline {
     }
 
     post {
-        //Limpiar workspace siempre al terminar
         always {
             cleanWs()
         }
