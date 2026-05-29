@@ -10,7 +10,7 @@ pipeline {
 
     stages {
 
-        // ETAPA 1: GET CODE - samconfig.toml (staging)
+        // ETAPA 1: GET CODE - descarga código (develop) + samconfig.toml (staging)
         stage('Get Code') {
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
@@ -148,6 +148,7 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
+                        git checkout -- samconfig.toml
                         git checkout master
                         git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
                         git push origin master
