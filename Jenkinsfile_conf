@@ -10,32 +10,16 @@ pipeline {
 
     stages {
 
-        // ETAPA 1: GET CODE
-        // Descarga el código fuente de develop Y el samconfig.toml de staging
-        // usando sparse checkout para traer solo el fichero necesario del repo de config
+        // ETAPA 1: GET CODE - samconfig.toml (staging)
         stage('Get Code') {
-            agent any
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
 
-                // 1a. Clonar el repo principal (rama develop) SIN samconfig.toml
-                //     para asegurarnos de que no usamos el que viene en el repo de código
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/develop']],
-                    doGenerateSubmoduleConfigurations: false,
-                    extensions: [
-                        [$class: 'SparseCheckoutPaths',
-                         sparseCheckoutPaths: [
-                             [$class: 'SparseCheckoutPath', path: '/*'],
-                             [$class: 'SparseCheckoutPath', path: '!/samconfig.toml']
-                         ]]
-                    ],
-                    userRemoteConfigs: [[url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git']]
-                ])
+                // Repo principal - rama develop
+                git branch: 'develop',
+                    url: 'https://github.com/Gonzalo-Pascual/todo-list-aws.git'
 
-                // 1b. Clonar el repo de config (rama staging) en subdirectorio temporal
-                //     trayendo únicamente el samconfig.toml
+                // Repo de config - rama staging (solo samconfig.toml)
                 dir('config') {
                     checkout([
                         $class: 'GitSCM',
@@ -51,27 +35,26 @@ pipeline {
                     ])
                 }
 
-                // 1c. Mover samconfig.toml al workspace raíz y limpiar el directorio temporal
+                // Mover samconfig.toml al workspace raíz (sobreescribe el del repo de código)
                 sh '''
                     mv config/samconfig.toml .
                     rm -rf config
-                    echo "=== Verificación: samconfig.toml de staging ==="
+                    echo "=== samconfig.toml de staging ==="
                     cat samconfig.toml
                     ls -la
                 '''
 
                 echo "WORKSPACE: ${env.WORKSPACE}"
                 sh 'git rev-parse --abbrev-ref HEAD'
-
-                // Guardamos todo el workspace (código + samconfig de staging) para los agentes
                 stash name: 'codigo', includes: '**/*'
             }
         }
 
-        // ETAPA 2: PRUEBAS ESTÁTICAS
+        // ETAPA 2: PRUEBAS ESTÁTICAS - agente1
         stage('Static Test') {
             agent { label 'agente1' }
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 sh '''
                     flake8 --exit-zero --format=pylint src > flake8.out
@@ -95,60 +78,43 @@ pipeline {
             }
         }
 
-        // ETAPA 3: DESPLIEGUE EN STAGING
-        // Usa el samconfig.toml descargado del repo de config (rama staging)
+        // ETAPA 3: DESPLIEGUE EN STAGING - agente principal
         stage('Deploy') {
-            agent any
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 sh '''
-                    sam delete \
-                        --stack-name todo-list-aws-staging \
-                        --no-prompts \
-                        --region ${AWS_DEFAULT_REGION} || true
-
                     sam build
-
                     sam validate --region ${AWS_DEFAULT_REGION}
-
-                    # --config-env staging lee la sección [staging] del samconfig.toml
-                    # que viene del repo de config, no del repo de código
                     sam deploy \
                         --config-env staging \
                         --no-confirm-changeset \
-                        --no-fail-on-empty-changeset | tee deploy_output.txt
+                        --no-fail-on-empty-changeset
                 '''
                 script {
-                    def baseUrl = sh(
-                        script: "awk '/Key *BaseUrlApi/{getline; getline; print \$2}' deploy_output.txt",
+                    env.BASE_URL = sh(
+                        script: '''
+                            aws cloudformation describe-stacks \
+                                --stack-name todo-list-aws-staging \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                                --output text
+                        ''',
                         returnStdout: true
                     ).trim()
-
-                    if (!baseUrl) {
-                        baseUrl = sh(
-                            script: """
-                                aws cloudformation describe-stacks \
-                                    --stack-name todo-list-aws-staging \
-                                    --region ${AWS_DEFAULT_REGION} \
-                                    --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                                    --output text
-                            """,
-                            returnStdout: true
-                        ).trim()
-                    }
-
-                    env.BASE_URL = baseUrl
-                    writeFile file: 'base_url.txt', text: baseUrl
-                    echo "API URL: ${env.BASE_URL}"
+                    echo "BASE_URL: ${env.BASE_URL}"
+                    writeFile file: 'base_url.txt', text: env.BASE_URL
+                    stash name: 'url', includes: 'base_url.txt'
                 }
-                stash name: 'url', includes: 'base_url.txt'
             }
         }
 
-        // ETAPA 4: PRUEBAS DE INTEGRACIÓN
+        // ETAPA 4: PRUEBAS DE INTEGRACIÓN - agente2
         stage('Rest Test') {
             agent { label 'agente2' }
             steps {
+                sh 'whoami ; hostname ; hostname -I'
+                unstash 'codigo'
                 unstash 'url'
                 sh '''
                     BASE_URL=$(cat base_url.txt)
@@ -167,10 +133,10 @@ pipeline {
             }
         }
 
-        // ETAPA 5: PROMOTE
+        // ETAPA 5: PROMOTE - agente principal
         stage('Promote') {
-            agent any
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 withCredentials([usernamePassword(
                     credentialsId: 'github-token',
@@ -182,23 +148,10 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
-                    
-                        # Descartar el samconfig.toml externo antes de cambiar de rama
-                        git checkout -- samconfig.toml
-                    
                         git checkout master
-                        git reset --hard origin/master
-                    
-                        git merge origin/develop --no-ff \
-                            -m "CI: Merge develop into master [auto]" \
-                            -X theirs
-                    
-                        git checkout origin/master -- Jenkinsfile
-                        git checkout origin/master -- Jenkinsfile_agentes
-                        git add Jenkinsfile Jenkinsfile_agentes
-                        git diff --cached --quiet || git commit --amend --no-edit
-                    
+                        git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
                         git push origin master
+                        git remote set-url origin https://github.com/Gonzalo-Pascual/todo-list-aws.git
                     '''
                 }
             }
