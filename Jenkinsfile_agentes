@@ -10,7 +10,7 @@ pipeline {
 
     stages {
 
-        // ETAPA 1: GET CODE — agente por defecto
+        // ETAPA 1: GET CODE - agente principal (main)
         stage('Get Code') {
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
@@ -23,7 +23,7 @@ pipeline {
             }
         }
 
-        // ETAPA 2: PRUEBAS ESTÁTICAS — agente1
+        // ETAPA 2: PRUEBAS ESTÁTICAS - agente1
         stage('Static Test') {
             agent { label 'agente1' }
             steps {
@@ -51,7 +51,7 @@ pipeline {
             }
         }
 
-        // ETAPA 3: DESPLIEGUE EN STAGING — agente por defecto
+        // ETAPA 3: DESPLIEGUE EN STAGING - agente principal (main)
         stage('Deploy') {
             steps {
                 sh 'whoami ; hostname ; hostname -I'
@@ -85,7 +85,7 @@ pipeline {
             }
         }
 
-        // ETAPA 4: PRUEBAS DE INTEGRACIÓN — agente2
+        // ETAPA 4: PRUEBAS DE INTEGRACIÓN - agente2
         stage('Rest Test') {
             agent { label 'agente2' }
             steps {
@@ -109,7 +109,7 @@ pipeline {
             }
         }
 
-        // ETAPA 5: PROMOTE — agente por defecto
+        // ETAPA 5: PROMOTE - agente principal (main)
         stage('Promote') {
             steps {
                 sh 'whoami ; hostname ; hostname -I'
