@@ -10,8 +10,8 @@ pipeline {
 
     stages {
 
+        // ETAPA 1: GET CODE — agente por defecto
         stage('Get Code') {
-            agent any
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
                 git branch: 'develop',
@@ -19,15 +19,15 @@ pipeline {
                 echo "WORKSPACE: ${env.WORKSPACE}"
                 sh 'git rev-parse --abbrev-ref HEAD'
                 sh 'ls -la'
-                // Guardamos el código para usarlo en otros agentes
                 stash name: 'codigo', includes: '**/*'
             }
         }
 
+        // ETAPA 2: PRUEBAS ESTÁTICAS — agente1
         stage('Static Test') {
-            // Agente dedicado para pruebas estáticas
             agent { label 'agente1' }
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 sh '''
                     flake8 --exit-zero --format=pylint src > flake8.out
@@ -51,63 +51,46 @@ pipeline {
             }
         }
 
+        // ETAPA 3: DESPLIEGUE EN STAGING — agente por defecto
         stage('Deploy') {
-            agent any
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 sh '''
-                    sam delete \
-                        --stack-name todo-list-aws-staging \
-                        --no-prompts \
-                        --region ${AWS_DEFAULT_REGION} || true
-
                     sam build
-
                     sam validate --region ${AWS_DEFAULT_REGION}
-
                     sam deploy \
                         --stack-name todo-list-aws-staging \
                         --region ${AWS_DEFAULT_REGION} \
                         --capabilities CAPABILITY_IAM \
                         --no-confirm-changeset \
                         --no-fail-on-empty-changeset \
-                        --parameter-overrides Stage=staging | tee deploy_output.txt
+                        --parameter-overrides Stage=staging
                 '''
-                // Guardamos la URL para el agente de tests
                 script {
-                    def baseUrl = sh(
-                        script: "awk '/Key *BaseUrlApi/{getline; getline; print \$2}' deploy_output.txt",
+                    env.BASE_URL = sh(
+                        script: '''
+                            aws cloudformation describe-stacks \
+                                --stack-name todo-list-aws-staging \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                                --output text
+                        ''',
                         returnStdout: true
                     ).trim()
-
-                    if (!baseUrl) {
-                        baseUrl = sh(
-                            script: """
-                                aws cloudformation describe-stacks \
-                                    --stack-name todo-list-aws-staging \
-                                    --region ${AWS_DEFAULT_REGION} \
-                                    --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                                    --output text
-                            """,
-                            returnStdout: true
-                        ).trim()
-                    }
-
-                    // Guardamos la URL en fichero y en variable global
-                    env.BASE_URL = baseUrl
-                    writeFile file: 'base_url.txt', text: baseUrl
-                    echo "API URL: ${env.BASE_URL}"
+                    echo "BASE_URL: ${env.BASE_URL}"
+                    writeFile file: 'base_url.txt', text: env.BASE_URL
+                    stash name: 'url', includes: 'base_url.txt'
                 }
-                // Guardamos la URL para que el agente de tests la pueda leer
-                stash name: 'url', includes: 'base_url.txt'
             }
         }
 
+        // ETAPA 4: PRUEBAS DE INTEGRACIÓN — agente2
         stage('Rest Test') {
-            // Agente dedicado para pruebas de integración
             agent { label 'agente2' }
             steps {
-                // Recuperamos la URL guardada por el agente del Deploy
+                sh 'whoami ; hostname ; hostname -I'
+                unstash 'codigo'
                 unstash 'url'
                 sh '''
                     BASE_URL=$(cat base_url.txt)
@@ -126,9 +109,10 @@ pipeline {
             }
         }
 
+        // ETAPA 5: PROMOTE — agente por defecto
         stage('Promote') {
-            agent any
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 withCredentials([usernamePassword(
                     credentialsId: 'github-token',
@@ -140,21 +124,10 @@ pipeline {
                         git config user.name "Jenkins CI"
                         git remote set-url origin https://${GIT_USER}:${GIT_TOKEN}@github.com/Gonzalo-Pascual/todo-list-aws.git
                         git fetch origin
-
-git checkout master
-git reset --hard origin/master
-
-git merge origin/develop --no-ff \
-    -m "CI: Merge develop into master [auto]" \
-    -X theirs
-
-# Restaurar ambos Jenkinsfiles desde master para no sobreescribirlos
-git checkout origin/master -- Jenkinsfile
-git checkout origin/master -- Jenkinsfile_agentes
-git add Jenkinsfile Jenkinsfile_agentes
-git diff --cached --quiet || git commit --amend --no-edit
-
-git push origin master
+                        git checkout master
+                        git merge origin/develop --no-ff -m "CI: Merge develop into master [auto]"
+                        git push origin master
+                        git remote set-url origin https://github.com/Gonzalo-Pascual/todo-list-aws.git
                     '''
                 }
             }
