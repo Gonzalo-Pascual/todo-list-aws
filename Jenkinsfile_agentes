@@ -10,8 +10,8 @@ pipeline {
 
     stages {
 
+        // ETAPA 1: GET CODE - agente principal (main)
         stage('Get Code') {
-            agent any
             steps {
                 sh 'whoami ; hostname ; hostname -I ; uname -a'
                 git branch: 'master',
@@ -23,54 +23,46 @@ pipeline {
             }
         }
 
+        // ETAPA 2: DESPLIEGUE EN PRODUCTION - agente principal (main)
         stage('Deploy') {
-            agent any
             steps {
+                sh 'whoami ; hostname ; hostname -I'
                 unstash 'codigo'
                 sh '''
-                    sam delete \
-                        --stack-name todo-list-aws-production \
-                        --no-prompts \
-                        --region ${AWS_DEFAULT_REGION} || true
-
                     sam build
-
+                    sam validate --region ${AWS_DEFAULT_REGION}
                     sam deploy \
-                        --config-file samconfig.toml \
-                        --config-env production \
+                        --stack-name todo-list-aws-production \
+                        --region ${AWS_DEFAULT_REGION} \
+                        --capabilities CAPABILITY_IAM \
                         --no-confirm-changeset \
-                        --no-fail-on-empty-changeset | tee deploy_output.txt
+                        --no-fail-on-empty-changeset \
+                        --parameter-overrides Stage=production
                 '''
                 script {
-                    def baseUrl = sh(
-                        script: "awk '/Key *BaseUrlApi/{getline; getline; print \$2}' deploy_output.txt",
+                    env.BASE_URL = sh(
+                        script: '''
+                            aws cloudformation describe-stacks \
+                                --stack-name todo-list-aws-production \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                                --output text
+                        ''',
                         returnStdout: true
                     ).trim()
-
-                    if (!baseUrl) {
-                        baseUrl = sh(
-                            script: """
-                                aws cloudformation describe-stacks \
-                                    --stack-name todo-list-aws-production \
-                                    --region ${AWS_DEFAULT_REGION} \
-                                    --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
-                                    --output text
-                            """,
-                            returnStdout: true
-                        ).trim()
-                    }
-
-                    env.BASE_URL = baseUrl
-                    writeFile file: 'base_url.txt', text: baseUrl
-                    echo "API URL: ${env.BASE_URL}"
+                    echo "BASE_URL: ${env.BASE_URL}"
+                    writeFile file: 'base_url.txt', text: env.BASE_URL
+                    stash name: 'url', includes: 'base_url.txt'
                 }
-                stash name: 'url', includes: 'base_url.txt'
             }
         }
 
+        // ETAPA 3: PRUEBAS DE INTEGRACIÓN (solo lectura) - agente2
         stage('Rest Test') {
             agent { label 'agente2' }
             steps {
+                sh 'whoami ; hostname ; hostname -I'
+                unstash 'codigo'
                 unstash 'url'
                 sh '''
                     BASE_URL=$(cat base_url.txt)
